@@ -1,0 +1,101 @@
+# Espelhamento das tags do keycloak/keycloak neste fork.
+#
+# Este fork é dormante: existe para sustentar uma correção emergencial do Keycloak enquanto o
+# upstream não solta a release com o fix. Em operação normal não há branch nossa aqui — só as
+# tags do upstream espelhadas, para que a branch `nuvem/<versão>` de uma emergência possa
+# nascer exatamente sobre a tag que está pinada em produção.
+#
+# Este é o **único** arquivo nosso no repositório, e é de propósito: o fork é público, e um
+# pipeline de publicação exporia nome de registro, desenho de espelho e identidade federada,
+# tanto no YAML quanto nos logs de execução. O build da imagem de emergência mora no
+# repositório privado do produto, que faz checkout daqui na branch de patch.
+#
+# A `main` deste fork nunca é base de build.
+
+name: Espelhar tags do upstream
+
+on:
+  schedule:
+    # Diário, 06:12 UTC (03:12 em São Paulo). Minuto quebrado de propósito: o GitHub
+    # enfileira as execuções agendadas na hora cheia e elas ficam esperando.
+    - cron: '12 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: espelhar-tags
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/keycloak/keycloak.git
+
+jobs:
+  espelhar:
+    name: Espelhar tags e sincronizar a main
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Clonar o fork
+        uses: actions/checkout@v4
+        with:
+          # Histórico completo: com clone raso o push das tags é recusado ("shallow update
+          # not allowed"). O filtro `blob:none` deixa o clone parcial e corta a maior parte
+          # do download — fork e upstream compartilham o armazenamento de objetos no GitHub,
+          # então empurrar tag daqui só cria referência, não transfere objeto.
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Buscar as tags do upstream
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --tags --force --no-recurse-submodules upstream
+
+      - name: Empurrar as tags para o fork
+        run: git push --tags --force origin
+
+      - name: Sincronizar a main com o upstream, preservando este workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `merge-upstream` é a sincronização de fork que o próprio GitHub faz: quando a
+          # nossa main só está atrás, ele adianta por fast-forward; quando ela tem o nosso
+          # commit, ele faz um merge de verdade. Este arquivo não existe no upstream, então
+          # não há conflito e ele sobrevive — que é o que "drift mínimo" exige, sem rebase
+          # nem force-push.
+          if saida=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/merge-upstream" -f branch=main 2>&1); then
+            echo "$saida"
+            tipo=$(printf '%s' "$saida" | jq -r '.merge_type // "desconhecido"')
+            echo "SINCRONIA_MAIN=$tipo" >> "$GITHUB_ENV"
+          else
+            echo "$saida"
+            # Conflito aqui não justifica falhar o job: o valor deste workflow são as tags, e
+            # a main do fork nunca é base de build. Mas precisa aparecer.
+            echo "::warning::A main não pôde ser sincronizada com o upstream. Resolva à mão antes da próxima emergência."
+            echo "SINCRONIA_MAIN=falhou" >> "$GITHUB_ENV"
+          fi
+
+      - name: Conferir o espelhamento
+        run: |
+          # `^{}` marca a linha do commit apontado por uma tag anotada; contar sem ela dá o
+          # número de tags de verdade.
+          tags_upstream=$(git ls-remote --tags upstream | grep -cv '\^{}$')
+          tags_fork=$(git ls-remote --tags origin | grep -cv '\^{}$')
+
+          {
+            echo "### Espelhamento de tags"
+            echo
+            echo "| Repositório | Tags |"
+            echo "|---|---:|"
+            echo "| \`keycloak/keycloak\` | $tags_upstream |"
+            echo "| \`$GITHUB_REPOSITORY\` | $tags_fork |"
+            echo
+            echo "Sincronia da \`main\` com o upstream: \`$SINCRONIA_MAIN\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$tags_fork" -lt "$tags_upstream" ]; then
+            echo "::error::O fork tem $tags_fork tags e o upstream tem $tags_upstream. O espelhamento não fechou."
+            exit 1
+          fi
