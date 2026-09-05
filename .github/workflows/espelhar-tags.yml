@@ -28,6 +28,12 @@ concurrency:
   group: espelhar-tags
   cancel-in-progress: false
 
+# ⚠️ Action pinada por SHA de commit, não por tag. Tag do GitHub é móvel: quem publica a
+# action pode reapontar `v7` para outro commit e todo mundo passa a executar código novo sem
+# revisão. Aqui isso importa porque o job tem `contents: write` neste repositório — é o mesmo
+# pin que o resto da casa usa, e o comentário `# vN` existe para o humano saber a que versão
+# o SHA corresponde.
+
 env:
   UPSTREAM: https://github.com/keycloak/keycloak.git
 
@@ -39,7 +45,7 @@ jobs:
 
     steps:
       - name: Clonar o fork
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Histórico completo: com clone raso o push das tags é recusado ("shallow update
           # not allowed"). O filtro `blob:none` deixa o clone parcial e corta a maior parte
